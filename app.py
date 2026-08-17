@@ -1,4 +1,4 @@
-""
+"""
 app.py — Dashboard del agente TUA.
 Correr localmente con: streamlit run app.py
 """
