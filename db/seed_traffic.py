@@ -30,6 +30,9 @@ FUENTE_GOBMX = ("Estadistica Operacional de Aeropuertos - Diciembre 2023 (SICT/A
 FUENTE_GAP = "Comunicados mensuales de trafico de pasajeros de GAP (GlobeNewswire/Nasdaq), ene-jul 2025/2026"
 FUENTE_ASUR_OMA = ("ASUR (prnewswire.com, jul-2026) y OMA (noticias.oma.aero, jul-2026) - "
                     "comunicados mensuales de trafico de pasajeros")
+FUENTE_OMA_EXCEL = ("OMA - Excel oficial de trafico historico de pasajeros "
+                     "(oma.aero/es/nuestros-servicios/aviacion-comercial/monterrey-c/"
+                     "estadisticas-de-pasajeros.php)")
 
 DATOS_GOBMX = [
     ("MEX", 2022, 12, 2861.8, 1376.9), ("MEX", 2023, 12, 2700.9, 1557.9),
@@ -110,9 +113,29 @@ DATOS_ASUR_OMA = [
     ("MID", 2025, 5, 281520, 28352), ("MID", 2026, 5, 313280, 29549),
     ("MID", 2025, 6, 279926, 31718), ("MID", 2026, 6, 270792, 29404),
     ("MID", 2025, 7, 317740, 33557), ("MID", 2026, 7, 328378, 34450),
-    # MTY (Monterrey) - solo julio, dato exacto de OMA (Jan-Jun bloqueado
-    # por robots.txt en ir.oma.aero; pendiente para completar despues)
+    # MTY (Monterrey) - solo julio via comunicado mensual; la serie completa
+    # 2024-2026 se carga aparte, desde el Excel oficial de OMA (mas abajo).
     ("MTY", 2025, 7, 1269119, 235347), ("MTY", 2026, 7, 1240747, 261947),
+]
+
+# MTY (Monterrey) - serie completa 2024, 2025 y 2026, extraida del Excel
+# historico oficial de OMA (fuente distinta al comunicado mensual de arriba).
+DATOS_OMA_EXCEL_MTY = [
+    ("MTY", 2024, 1, 817194, 155889), ("MTY", 2024, 2, 744793, 137897),
+    ("MTY", 2024, 3, 852897, 172495), ("MTY", 2024, 4, 867584, 162242),
+    ("MTY", 2024, 5, 937807, 173222), ("MTY", 2024, 6, 913359, 183716),
+    ("MTY", 2024, 7, 1100114, 215201), ("MTY", 2024, 8, 1071452, 200659),
+    ("MTY", 2024, 9, 933935, 179820), ("MTY", 2024, 10, 975338, 191437),
+    ("MTY", 2024, 11, 1067546, 207175), ("MTY", 2024, 12, 1074750, 245077),
+    ("MTY", 2025, 1, 905723, 207934), ("MTY", 2025, 2, 819214, 162815),
+    ("MTY", 2025, 3, 994105, 201495), ("MTY", 2025, 4, 1139113, 234601),
+    ("MTY", 2025, 5, 1086661, 215272), ("MTY", 2025, 6, 1110255, 213193),
+    ("MTY", 2025, 8, 1229554, 217927), ("MTY", 2025, 9, 1081071, 189511),
+    ("MTY", 2025, 10, 1142717, 202812), ("MTY", 2025, 11, 1142971, 202633),
+    ("MTY", 2025, 12, 1171622, 247610), ("MTY", 2026, 1, 1003821, 199023),
+    ("MTY", 2026, 2, 907833, 154814), ("MTY", 2026, 3, 1084554, 191788),
+    ("MTY", 2026, 4, 1078875, 196193), ("MTY", 2026, 5, 1136007, 196848),
+    ("MTY", 2026, 6, 1092665, 235257),
 ]
 
 
@@ -144,10 +167,11 @@ def main():
     n1 = cargar(conn, code_to_id, DATOS_GOBMX, FUENTE_GOBMX, escala_miles=True)
     n2 = cargar(conn, code_to_id, DATOS_GAP, FUENTE_GAP, escala_miles=True)
     n3 = cargar(conn, code_to_id, DATOS_ASUR_OMA, FUENTE_ASUR_OMA, escala_miles=False)
+    n4 = cargar(conn, code_to_id, DATOS_OMA_EXCEL_MTY, FUENTE_OMA_EXCEL, escala_miles=False)
 
     conn.commit()
     conn.close()
-    print(f"Cargadas {n1} filas de gob.mx, {n2} de GAP, {n3} de ASUR/OMA.")
+    print(f"Cargadas {n1} filas de gob.mx, {n2} de GAP, {n3} de ASUR/OMA, {n4} de OMA (Excel Monterrey).")
     print("Operaciones (vuelos): siguen pendientes, ninguna fuente las trae junto a pasajeros.")
 
 
