@@ -1,211 +1,179 @@
 """
-app.py — Dashboard del agente TUA.
-Correr localmente con: streamlit run app.py
+seed_traffic.py - carga datos REALES de pasajeros, combinando 3 fuentes
+oficiales distintas:
+
+  1) gob.mx (SICT/AFAC/DT): dic-2022 y dic-2023, los 10 aeropuertos.
+
+  2) GAP (Grupo Aeroportuario del Pacifico) - comunicados mensuales
+     propios (GlobeNewswire/Nasdaq): serie COMPLETA enero-julio de
+     2025 y 2026 para Guadalajara, Tijuana, Los Cabos, Puerto Vallarta
+     y Del Bajio/Guanajuato.
+
+  3) ASUR y OMA - comunicados mensuales propios: julio 2025/2026 para
+     Cancun, Merida y Monterrey (numeros exactos, no en miles).
+
+IMPORTANTE - que sigue faltando:
+  - AICM (MEX) y AIFA (NLU): sin comunicado mensual publico como
+    GAP/ASUR/OMA, solo dic-2022 y dic-2023.
+  - Agosto en adelante de 2025/2026, y todo 2024: no cargado todavia.
+  - Operaciones (vuelos): ninguna de estas fuentes las trae junto con
+    pasajeros.
 """
 import sqlite3
 from pathlib import Path
 
-import pandas as pd
-import streamlit as st
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "tua.db"
 
-from projection import totales_anuales, proyectar_quinquenios
+FUENTE_GOBMX = ("Estadistica Operacional de Aeropuertos - Diciembre 2023 (SICT/AFAC/DT) - "
+                "https://www.gob.mx/cms/uploads/attachment/file/885180/"
+                "producto-aeropuertos-es-dic-23-26012024.pdf")
+FUENTE_GAP = "Comunicados mensuales de trafico de pasajeros de GAP (GlobeNewswire/Nasdaq), ene-jul 2025/2026"
+FUENTE_ASUR_OMA = ("ASUR (prnewswire.com, jul-2026) y OMA (noticias.oma.aero, jul-2026) - "
+                    "comunicados mensuales de trafico de pasajeros")
+FUENTE_OMA_EXCEL = ("OMA - Excel oficial de trafico historico de pasajeros "
+                     "(oma.aero/es/nuestros-servicios/aviacion-comercial/monterrey-c/"
+                     "estadisticas-de-pasajeros.php)")
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "tua.db"
+DATOS_GOBMX = [
+    ("MEX", 2022, 12, 2861.8, 1376.9), ("MEX", 2023, 12, 2700.9, 1557.9),
+    ("CUN", 2022, 12, 1050.5, 1884.1), ("CUN", 2023, 12, 961.6, 2059.6),
+    ("GDL", 2022, 12, 1103.3, 438.0), ("GDL", 2023, 12, 1027.9, 531.2),
+    ("MTY", 2022, 12, 919.0, 167.2), ("MTY", 2023, 12, 970.3, 170.9),
+    ("TIJ", 2022, 12, 1146.8, None), ("TIJ", 2023, 12, 1102.6, None),
+    ("SJD", 2022, 12, 247.1, 403.6), ("SJD", 2023, 12, 251.5, 425.2),
+    ("PVR", 2022, 12, 246.9, 416.6), ("PVR", 2023, 12, 227.0, 467.5),
+    ("MID", 2022, 12, 301.9, 25.7), ("MID", 2023, 12, 313.5, 30.0),
+    ("NLU", 2022, 12, 199.9, 11.8), ("NLU", 2023, 12, 253.6, 22.9),
+    ("BJX", 2022, 12, 188.0, 73.9), ("BJX", 2023, 12, 189.2, 83.1),
+]
 
-st.set_page_config(page_title="Agente TUA - Aeropuertos de México", layout="wide")
-st.title("✈️ Agente QO — TUA, tráfico e ingresos de aeropuertos mexicanos")
+# Serie completa ene-jul 2025 y ene-jul 2026 (miles de pasajeros)
+DATOS_GAP = [
+    # GDL
+    ("GDL", 2025, 1, 1006.2, 600.8), ("GDL", 2025, 2, 926.2, 430.1),
+    ("GDL", 2025, 3, 1088.8, 476.1), ("GDL", 2025, 4, 1067.5, 452.9),
+    ("GDL", 2025, 5, 1023.4, 457.5), ("GDL", 2025, 6, 1000.1, 476.9),
+    ("GDL", 2025, 7, 1092.5, 563.9),
+    ("GDL", 2026, 1, 1066.3, 598.1), ("GDL", 2026, 2, 906.2, 428.8),
+    ("GDL", 2026, 3, 1063.1, 465.3), ("GDL", 2026, 4, 1066.2, 467.2),
+    ("GDL", 2026, 5, 1085.9, 499.9), ("GDL", 2026, 6, 1033.9, 531.9),
+    ("GDL", 2026, 7, 1225.6, 649.7),
+    # TIJ
+    ("TIJ", 2025, 1, 702.1, 380.0), ("TIJ", 2025, 2, 631.4, 290.1),
+    ("TIJ", 2025, 3, 724.0, 344.7), ("TIJ", 2025, 4, 748.6, 351.1),
+    ("TIJ", 2025, 5, 730.5, 336.6), ("TIJ", 2025, 6, 660.1, 364.1),
+    ("TIJ", 2025, 7, 776.3, 379.1),
+    ("TIJ", 2026, 1, 698.4, 338.7), ("TIJ", 2026, 2, 584.7, 268.9),
+    ("TIJ", 2026, 3, 685.4, 290.0), ("TIJ", 2026, 4, 671.7, 312.8),
+    ("TIJ", 2026, 5, 664.5, 297.9), ("TIJ", 2026, 6, 637.5, 339.4),
+    ("TIJ", 2026, 7, 811.6, 427.2),
+    # SJD
+    ("SJD", 2025, 1, 232.2, 426.7), ("SJD", 2025, 2, 197.8, 410.5),
+    ("SJD", 2025, 3, 238.9, 545.8), ("SJD", 2025, 4, 254.6, 442.9),
+    ("SJD", 2025, 5, 245.0, 367.3), ("SJD", 2025, 6, 240.1, 414.1),
+    ("SJD", 2025, 7, 282.9, 403.9),
+    ("SJD", 2026, 1, 219.1, 437.9), ("SJD", 2026, 2, 185.7, 427.8),
+    ("SJD", 2026, 3, 223.5, 507.0), ("SJD", 2026, 4, 240.9, 400.1),
+    ("SJD", 2026, 5, 247.0, 328.8), ("SJD", 2026, 6, 235.4, 355.4),
+    ("SJD", 2026, 7, 302.6, 336.9),
+    # PVR
+    ("PVR", 2025, 1, 229.5, 483.8), ("PVR", 2025, 2, 192.6, 457.3),
+    ("PVR", 2025, 3, 231.5, 531.4), ("PVR", 2025, 4, 278.4, 375.7),
+    ("PVR", 2025, 5, 278.2, 236.1), ("PVR", 2025, 6, 273.8, 237.3),
+    ("PVR", 2025, 7, 321.5, 229.1),
+    ("PVR", 2026, 1, 242.5, 489.2), ("PVR", 2026, 2, 186.5, 428.9),
+    ("PVR", 2026, 3, 215.8, 360.8), ("PVR", 2026, 4, 255.1, 287.5),
+    ("PVR", 2026, 5, 266.7, 173.5), ("PVR", 2026, 6, 257.4, 157.9),
+    ("PVR", 2026, 7, 323.3, 160.9),
+    # BJX
+    ("BJX", 2025, 1, 176.8, 107.4), ("BJX", 2025, 2, 158.4, 72.4),
+    ("BJX", 2025, 3, 180.3, 83.2), ("BJX", 2025, 4, 194.0, 84.3),
+    ("BJX", 2025, 5, 194.1, 80.3), ("BJX", 2025, 6, 188.6, 88.1),
+    ("BJX", 2025, 7, 204.0, 108.7),
+    ("BJX", 2026, 1, 180.9, 109.6), ("BJX", 2026, 2, 151.3, 71.7),
+    ("BJX", 2026, 3, 178.6, 76.6), ("BJX", 2026, 4, 179.1, 72.2),
+    ("BJX", 2026, 5, 181.3, 71.9), ("BJX", 2026, 6, 173.4, 78.0),
+    ("BJX", 2026, 7, 212.7, 102.1),
+]
+
+DATOS_ASUR_OMA = [
+    # CUN (Cancun) - serie completa ene-jul 2025 y 2026
+    ("CUN", 2025, 1, 813464, 1945595), ("CUN", 2026, 1, 743606, 1988889),
+    ("CUN", 2025, 2, 680189, 1809498), ("CUN", 2026, 2, 630468, 1868343),
+    ("CUN", 2025, 3, 794115, 2142355), ("CUN", 2026, 3, 747556, 2054234),
+    ("CUN", 2025, 4, 835045, 1739253), ("CUN", 2026, 4, 789691, 1674788),
+    ("CUN", 2025, 5, 867155, 1468569), ("CUN", 2026, 5, 841058, 1305796),
+    ("CUN", 2025, 6, 828705, 1558510), ("CUN", 2026, 6, 759398, 1353772),
+    ("CUN", 2025, 7, 921781, 1709759), ("CUN", 2026, 7, 917079, 1492358),
+    # MID (Merida) - serie completa ene-jul 2025 y 2026
+    ("MID", 2025, 1, 278728, 37753), ("MID", 2026, 1, 315955, 41433),
+    ("MID", 2025, 2, 248115, 34932), ("MID", 2026, 2, 271434, 38726),
+    ("MID", 2025, 3, 280523, 39066), ("MID", 2026, 3, 309513, 41830),
+    ("MID", 2025, 4, 287801, 32524), ("MID", 2026, 4, 308622, 31690),
+    ("MID", 2025, 5, 281520, 28352), ("MID", 2026, 5, 313280, 29549),
+    ("MID", 2025, 6, 279926, 31718), ("MID", 2026, 6, 270792, 29404),
+    ("MID", 2025, 7, 317740, 33557), ("MID", 2026, 7, 328378, 34450),
+    # MTY (Monterrey) - solo julio via comunicado mensual; la serie completa
+    # 2024-2026 se carga aparte, desde el Excel oficial de OMA (mas abajo).
+    ("MTY", 2025, 7, 1269119, 235347), ("MTY", 2026, 7, 1240747, 261947),
+]
+
+# MTY (Monterrey) - serie completa 2024, 2025 y 2026, extraida del Excel
+# historico oficial de OMA (fuente distinta al comunicado mensual de arriba).
+DATOS_OMA_EXCEL_MTY = [
+    ("MTY", 2024, 1, 817194, 155889), ("MTY", 2024, 2, 744793, 137897),
+    ("MTY", 2024, 3, 852897, 172495), ("MTY", 2024, 4, 867584, 162242),
+    ("MTY", 2024, 5, 937807, 173222), ("MTY", 2024, 6, 913359, 183716),
+    ("MTY", 2024, 7, 1100114, 215201), ("MTY", 2024, 8, 1071452, 200659),
+    ("MTY", 2024, 9, 933935, 179820), ("MTY", 2024, 10, 975338, 191437),
+    ("MTY", 2024, 11, 1067546, 207175), ("MTY", 2024, 12, 1074750, 245077),
+    ("MTY", 2025, 1, 905723, 207934), ("MTY", 2025, 2, 819214, 162815),
+    ("MTY", 2025, 3, 994105, 201495), ("MTY", 2025, 4, 1139113, 234601),
+    ("MTY", 2025, 5, 1086661, 215272), ("MTY", 2025, 6, 1110255, 213193),
+    ("MTY", 2025, 8, 1229554, 217927), ("MTY", 2025, 9, 1081071, 189511),
+    ("MTY", 2025, 10, 1142717, 202812), ("MTY", 2025, 11, 1142971, 202633),
+    ("MTY", 2025, 12, 1171622, 247610), ("MTY", 2026, 1, 1003821, 199023),
+    ("MTY", 2026, 2, 907833, 154814), ("MTY", 2026, 3, 1084554, 191788),
+    ("MTY", 2026, 4, 1078875, 196193), ("MTY", 2026, 5, 1136007, 196848),
+    ("MTY", 2026, 6, 1092665, 235257),
+]
 
 
-# --- Helpers de formato (números con coma de miles, punto decimal, pesos con MN) ---
-def fmt_num(x):
-    """1234567 -> '1,234,567'"""
-    if pd.isna(x):
-        return "-"
-    return f"{x:,.0f}"
+def cargar(conn, code_to_id, filas, fuente, escala_miles):
+    insertados = 0
+    for code, year, month, dom, intl in filas:
+        airport_id = code_to_id.get(code)
+        if airport_id is None:
+            continue
+        pax_nac = round(dom * 1000) if (dom is not None and escala_miles) else (
+            round(dom) if dom is not None else None)
+        pax_intl = round(intl * 1000) if (intl is not None and escala_miles) else (
+            round(intl) if intl is not None else None)
+        conn.execute(
+            """INSERT OR IGNORE INTO traffic
+               (airport_id, year, month, passengers_nacional, passengers_internacional,
+                operaciones_nacional, operaciones_internacional, source_url)
+               VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)""",
+            (airport_id, year, month, pax_nac, pax_intl, fuente),
+        )
+        insertados += 1
+    return insertados
 
 
-def fmt_money(x):
-    """1234567.8 -> '$1,234,567.80 MN'"""
-    if pd.isna(x):
-        return "-"
-    return f"${x:,.2f} MN"
-
-
-@st.cache_data
-def cargar_datos():
+def main():
     conn = sqlite3.connect(DB_PATH)
-    airports = pd.read_sql("SELECT * FROM airports", conn)
-    traffic = pd.read_sql("SELECT * FROM traffic", conn)
-    tua = pd.read_sql("SELECT * FROM tua_rates", conn)
+    code_to_id = dict(conn.execute("SELECT code, id FROM airports"))
+
+    n1 = cargar(conn, code_to_id, DATOS_GOBMX, FUENTE_GOBMX, escala_miles=True)
+    n2 = cargar(conn, code_to_id, DATOS_GAP, FUENTE_GAP, escala_miles=True)
+    n3 = cargar(conn, code_to_id, DATOS_ASUR_OMA, FUENTE_ASUR_OMA, escala_miles=False)
+    n4 = cargar(conn, code_to_id, DATOS_OMA_EXCEL_MTY, FUENTE_OMA_EXCEL, escala_miles=False)
+
+    conn.commit()
     conn.close()
-    return airports, traffic, tua
+    print(f"Cargadas {n1} filas de gob.mx, {n2} de GAP, {n3} de ASUR/OMA, {n4} de OMA (Excel Monterrey).")
+    print("Operaciones (vuelos): siguen pendientes, ninguna fuente las trae junto a pasajeros.")
 
 
-airports, traffic, tua = cargar_datos()
-
-if traffic.empty:
-    st.warning(
-        "Todavía no hay datos de tráfico (pasajeros/operaciones) cargados. "
-        "Falta correr la carga histórica (ver README) y luego updater.py."
-    )
-    st.stop()
-
-# --- Filtros laterales ---
-st.sidebar.header("Filtros")
-nombres = airports["name"].tolist()
-seleccionados = st.sidebar.multiselect(
-    "Aeropuerto(s) a mostrar / comparar", nombres, default=nombres[:3]
-)
-
-anios_disponibles = sorted(traffic["year"].unique())
-anios_sel = st.sidebar.multiselect(
-    "Año(s)", anios_disponibles, default=anios_disponibles
-)
-
-ids_seleccionados = airports[airports["name"].isin(seleccionados)]["id"].tolist()
-traffic_f = traffic[
-    traffic["airport_id"].isin(ids_seleccionados) & traffic["year"].isin(anios_sel)
-].copy()
-tua_f = tua[tua["airport_id"].isin(ids_seleccionados)]
-
-# --- Última TUA vigente por aeropuerto seleccionado ---
-st.subheader("Tarifa TUA vigente")
-if not tua_f.empty:
-    ultima_tua = (
-        tua_f.sort_values("effective_date")
-        .groupby("airport_id")
-        .last()
-        .reset_index()
-        .merge(airports, left_on="airport_id", right_on="id")
-    )
-    tabla_tua = ultima_tua[["name", "effective_date", "tua_nacional", "tua_internacional", "source_url"]].copy()
-    tabla_tua["tua_nacional"] = tabla_tua["tua_nacional"].apply(fmt_money)
-    tabla_tua["tua_internacional"] = tabla_tua["tua_internacional"].apply(fmt_money)
-    tabla_tua = tabla_tua.rename(columns={
-        "name": "Aeropuerto",
-        "effective_date": "Vigente desde",
-        "tua_nacional": "TUA nacional",
-        "tua_internacional": "TUA internacional",
-        "source_url": "Fuente",
-    })
-    st.dataframe(tabla_tua, use_container_width=True, hide_index=True)
-else:
-    st.info("No hay tarifas TUA cargadas para la selección actual.")
-
-# --- Gráficos de operaciones y pasajeros ---
-if not traffic_f.empty:
-    traffic_f = traffic_f.merge(airports, left_on="airport_id", right_on="id")
-    traffic_f["fecha"] = pd.to_datetime(
-        traffic_f["year"].astype(str) + "-" + traffic_f["month"].astype(str) + "-01"
-    )
-    traffic_f["pasajeros"] = (
-        traffic_f["passengers_nacional"].fillna(0) + traffic_f["passengers_internacional"].fillna(0)
-    )
-    traffic_f["operaciones"] = (
-        traffic_f["operaciones_nacional"].fillna(0) + traffic_f["operaciones_internacional"].fillna(0)
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Pasajeros por mes")
-        pivot_pax = traffic_f.pivot_table(index="fecha", columns="name", values="pasajeros")
-        st.line_chart(pivot_pax)
-    with col2:
-        st.subheader("Operaciones por mes")
-        pivot_ops = traffic_f.pivot_table(index="fecha", columns="name", values="operaciones")
-        st.line_chart(pivot_ops)
-
-    # --- Ingresos TUA estimados (pasajeros x tarifa vigente) ---
-    st.subheader("Ingresos TUA estimados por mes")
-    st.caption(
-        "Cálculo aproximado: pasajeros nacionales x TUA nacional vigente + "
-        "pasajeros internacionales x TUA internacional vigente (usa la última tarifa conocida)."
-    )
-    ingresos = []
-    for _, row in traffic_f.iterrows():
-        tarifa = ultima_tua[ultima_tua["airport_id"] == row["airport_id"]] if not tua_f.empty else pd.DataFrame()
-        if not tarifa.empty:
-            t = tarifa.iloc[0]
-            ing = (row["passengers_nacional"] or 0) * (t["tua_nacional"] or 0) + \
-                  (row["passengers_internacional"] or 0) * (t["tua_internacional"] or 0)
-        else:
-            ing = None
-        ingresos.append(ing)
-    traffic_f["ingreso_tua_estimado"] = ingresos
-    pivot_ing = traffic_f.pivot_table(index="fecha", columns="name", values="ingreso_tua_estimado")
-    st.bar_chart(pivot_ing)
-
-    # --- Comparar un mes específico entre aeropuertos ---
-    st.subheader("Comparar un mes específico")
-    meses_es = {1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
-                7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"}
-    combos = traffic_f[["year", "month"]].drop_duplicates().sort_values(["year", "month"])
-    combos["etiqueta"] = combos.apply(lambda r: f"{meses_es[r['month']]} {r['year']}", axis=1)
-
-    if not combos.empty:
-        etiqueta_sel = st.selectbox("Elegí el mes a comparar", combos["etiqueta"].tolist(), index=len(combos) - 1)
-        fila = combos[combos["etiqueta"] == etiqueta_sel].iloc[0]
-        mes_data = traffic_f[(traffic_f["year"] == fila["year"]) & (traffic_f["month"] == fila["month"])]
-
-        tabla_mes = mes_data[["name", "passengers_nacional", "passengers_internacional",
-                               "pasajeros", "operaciones", "ingreso_tua_estimado"]].copy()
-        tabla_mes["passengers_nacional"] = tabla_mes["passengers_nacional"].apply(fmt_num)
-        tabla_mes["passengers_internacional"] = tabla_mes["passengers_internacional"].apply(fmt_num)
-        tabla_mes["pasajeros"] = tabla_mes["pasajeros"].apply(fmt_num)
-        tabla_mes["operaciones"] = tabla_mes["operaciones"].apply(fmt_num)
-        tabla_mes["ingreso_tua_estimado"] = tabla_mes["ingreso_tua_estimado"].apply(fmt_money)
-        tabla_mes = tabla_mes.rename(columns={
-            "name": "Aeropuerto",
-            "passengers_nacional": "Pasajeros nacionales",
-            "passengers_internacional": "Pasajeros internacionales",
-            "pasajeros": "Pasajeros totales",
-            "operaciones": "Operaciones",
-            "ingreso_tua_estimado": "Ingreso TUA estimado",
-        })
-        st.dataframe(tabla_mes, use_container_width=True, hide_index=True)
-
-        st.bar_chart(mes_data.set_index("name")[["pasajeros"]])
-    else:
-        st.caption("No hay meses cargados todavía para esta selección.")
-
-    # --- Proyección por quinquenio ---
-    st.subheader("Proyección por quinquenio")
-    st.caption(
-        "⚠️ Los totales por año se calculan solo con los meses que ya están "
-        "cargados en la base (no siempre son los 12 meses). Mientras falten "
-        "meses, comparar un año contra otro puede ser engañoso: fijate en la "
-        "columna 'Meses cargados' antes de confiar en la proyección."
-    )
-    n_q = st.slider("¿Cuántos quinquenios proyectar?", 1, 5, 3)
-    for aid in ids_seleccionados:
-        nombre = airports[airports["id"] == aid]["name"].values[0]
-        df_air = traffic_f[traffic_f["airport_id"] == aid]
-        anual = totales_anuales(df_air)
-        st.markdown(f"**{nombre}**")
-
-        tabla_anual = anual.copy()
-        tabla_anual["pasajeros"] = tabla_anual["pasajeros"].apply(fmt_num)
-        tabla_anual["operaciones"] = tabla_anual["operaciones"].apply(fmt_num)
-        tabla_anual = tabla_anual.rename(columns={
-            "year": "Año", "pasajeros": "Pasajeros", "operaciones": "Operaciones",
-            "meses_cargados": "Meses cargados",
-        })
-        st.dataframe(tabla_anual, use_container_width=True, hide_index=True)
-
-        if (anual["meses_cargados"] < 12).any():
-            st.caption("Algunos años tienen menos de 12 meses cargados — el total no es comparable todavía.")
-        if len(anual) >= 2:
-            proy = proyectar_quinquenios(anual, n_quinquenios=n_q)
-            tabla_proy = proy.copy()
-            tabla_proy["pasajeros_proyectados"] = tabla_proy["pasajeros_proyectados"].apply(fmt_num)
-            tabla_proy["operaciones_proyectadas"] = tabla_proy["operaciones_proyectadas"].apply(fmt_num)
-            tabla_proy = tabla_proy.rename(columns={
-                "quinquenio": "Quinquenio", "anio_desde": "Año desde", "anio_hasta": "Año hasta",
-                "pasajeros_proyectados": "Pasajeros proyectados",
-                "operaciones_proyectadas": "Operaciones proyectadas",
-            })
-            st.dataframe(tabla_proy, use_container_width=True, hide_index=True)
-        else:
-            st.caption("Faltan al menos 2 años de historia para proyectar este aeropuerto.")
-else:
-    st.info("Elegí al menos un aeropuerto y un año con datos cargados para ver los gráficos.")
+if __name__ == "__main__":
+    main()
